@@ -83,9 +83,8 @@ async fn create_presentation(example_type: &ExampleType) -> Result<(), Box<dyn s
             if reveal_all {
                 builder.reveal_recv(response)?;
             } else {
-                builder.reveal_recv(json.get("id").unwrap())?;
-                builder.reveal_recv(json.get("information.name").unwrap())?;
-                builder.reveal_recv(json.get("meta.version").unwrap())?;
+                builder.reveal_recv(json.get("currency").unwrap())?;
+                builder.reveal_recv(json.get("employer").unwrap())?;
             }
         }
         _ => {

@@ -33,11 +33,16 @@ use tlsn::{
 };
 use tlsn_examples::ExampleType;
 use tlsn_formats::http::{DefaultHttpCommitter, HttpCommit, HttpTranscript};
-use tlsn_server_fixture::DEFAULT_FIXTURE_PORT;
-use tlsn_server_fixture_certs::{CA_CERT_DER, CLIENT_CERT_DER, CLIENT_KEY_DER, SERVER_DOMAIN};
+// use tlsn_server_fixture::DEFAULT_FIXTURE_PORT;
+// use tlsn_server_fixture_certs::{CA_CERT_DER, CLIENT_CERT_DER, CLIENT_KEY_DER, SERVER_DOMAIN};
 
 // Setting of the application server.
 const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36";
+const SERVER_HOST: &str = "127.0.0.1";
+const DEFAULT_FIXTURE_PORT: u16 = 8443;
+const SERVER_DOMAIN: &str = "localhost";
+const CA_CERT_DER: &[u8] = include_bytes!("ca.der");
+const ACCESS_TOKEN: &str = "mock-token-user-001";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -116,11 +121,6 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
             .root_store(RootCertStore {
                 roots: vec![CertificateDer(CA_CERT_DER.to_vec())],
             })
-            // (Optional) Set up TLS client authentication if required by the server.
-            .client_auth((
-                vec![CertificateDer(CLIENT_CERT_DER.to_vec())],
-                PrivateKeyDer(CLIENT_KEY_DER.to_vec()),
-            ))
             .build()?,
         client_socket.compat(),
     )?;
@@ -138,14 +138,10 @@ async fn prover<S: AsyncWrite + AsyncRead + Send + Sync + Unpin + 'static>(
 
     // Build a simple HTTP request with common headers.
     let request_builder = Request::builder()
-        .uri(uri)
+        .uri("/employment")
         .header("Host", SERVER_DOMAIN)
-        .header("Accept", "*/*")
-        // Using "identity" instructs the Server not to use compression for its HTTP response.
-        // TLSNotary tooling does not support compression.
-        .header("Accept-Encoding", "identity")
-        .header("Connection", "close")
-        .header("User-Agent", USER_AGENT);
+        .header("Authorization", format!("Bearer {ACCESS_TOKEN}"));
+
     let mut request_builder = request_builder;
     for (key, value) in extra_headers {
         request_builder = request_builder.header(key, value);

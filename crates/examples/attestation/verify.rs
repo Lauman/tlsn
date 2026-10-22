@@ -16,7 +16,8 @@ use tlsn::{
     webpki::{CertificateDer, RootCertStore},
 };
 use tlsn_examples::ExampleType;
-use tlsn_server_fixture_certs::CA_CERT_DER;
+// use tlsn_server_fixture_certs::CA_CERT_DER;
+const CA_CERT_DER: &[u8] = include_bytes!("ca.der");
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
