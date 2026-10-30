@@ -249,6 +249,10 @@ pub use extension::{Extension, InvalidExtension};
 pub use proof::{AttestationError, AttestationProof};
 pub use provider::CryptoProvider;
 pub use secrets::Secrets;
+
+#[cfg(test)]
+mod noir_fixture_export;
+
 /// Current version of attestations.
 pub const VERSION: Version = Version(0);
 
