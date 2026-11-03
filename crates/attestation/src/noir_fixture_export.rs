@@ -80,7 +80,8 @@ fn export_real_tlsn_income_fixture() -> anyhow::Result<()> {
             .parent()
             .context("fixture output path has no parent directory")?,
     )?;
-    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository_root = manifest_dir
         .ancestors()
         .nth(4)
         .context("could not resolve repository root from the attestation crate")?;
