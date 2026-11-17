@@ -1,4 +1,8 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, ensure};
 use serde_json::{Value, json};
@@ -9,9 +13,11 @@ use crate::{
     signing::{Secp256k1Signer, Signer},
 };
 use tlsn_core::{
+    connection::CertBinding,
     hash::HashAlgId,
     merkle::MerkleTree,
     transcript::{Direction, TranscriptCommitment, TranscriptSecret},
+    webpki::{CertificateDer, RootCertStore, ServerCertVerifier},
 };
 
 #[test]
@@ -23,14 +29,29 @@ fn export_real_tlsn_income_fixture() -> anyhow::Result<()> {
     let expected_income = env::var("TLSN_FIXTURE_EXPECTED_INCOME")
         .context("TLSN_FIXTURE_EXPECTED_INCOME is not set")?
         .into_bytes();
+    let ca_der_path = required_path("TLSN_FIXTURE_CA_DER")?;
+    let ca_der = fs::read(&ca_der_path).with_context(|| {
+        format!(
+            "failed to read the pinned CA certificate {}",
+            ca_der_path.display()
+        )
+    })?;
+    let expected_server_name =
+        env::var("TLSN_FIXTURE_EXPECTED_SERVER_NAME").unwrap_or_else(|_| "localhost".to_string());
 
     let attestation: Attestation = bincode::deserialize(&fs::read(attestation_path)?)
         .context("failed to decode the TLSN attestation")?;
     let secrets: Secrets =
         bincode::deserialize(&fs::read(secrets_path)?).context("failed to decode TLSN secrets")?;
 
-    let fixture = build_fixture(&attestation, &secrets, &expected_income)?;
-    assert_eq!(fixture["schema"], "zk-escrow.tlsn-income-fixture/v1");
+    let fixture = build_fixture(
+        &attestation,
+        &secrets,
+        &expected_income,
+        &ca_der,
+        &expected_server_name,
+    )?;
+    assert_eq!(fixture["schema"], "zk-escrow.tlsn-income-fixture/v2");
     assert_eq!(fixture["income"]["bytes"], json!(expected_income));
     assert_eq!(fixture["income"]["direction"], "Received");
     assert_eq!(fixture["income"]["hash_alg"], "BLAKE3");
@@ -74,6 +95,42 @@ fn export_real_tlsn_income_fixture() -> anyhow::Result<()> {
             .unwrap()
             .is_empty()
     );
+    assert_eq!(
+        fixture["identity"]["server_name"],
+        json!(expected_server_name)
+    );
+    assert!(
+        !fixture["identity"]["cert_commitment_bcs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture["identity"]["cert_commitment_value"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+    assert_eq!(
+        fixture["identity"]["cert_commitment_leaf"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+    assert!(
+        fixture["identity"]["merkle"]["proof"]["leaf_count"]
+            .as_u64()
+            .unwrap()
+            > 1
+    );
+    assert!(
+        !fixture["identity"]["merkle"]["proof"]["proof"]["proof_hashes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     let output_parent = fs::canonicalize(
         output_path
@@ -105,6 +162,8 @@ fn build_fixture(
     attestation: &Attestation,
     secrets: &Secrets,
     expected_income: &[u8],
+    ca_der: &[u8],
+    expected_server_name: &str,
 ) -> anyhow::Result<Value> {
     let transcript = secrets.transcript();
     let received = transcript.received();
@@ -203,8 +262,57 @@ fn build_fixture(
         "fixture notary key differs from the pinned Mock Bank test key"
     );
 
+    // Trust policy: explicit pin of the configured development CA and exact server name.
+    // `ServerCertCommitment` is per-session, so it is validated here rather than pinned.
+    let cert_verifier = ServerCertVerifier::new(&RootCertStore {
+        roots: vec![CertificateDer(ca_der.to_vec())],
+    })
+    .context("failed to build the pinned server certificate verifier")?;
+    let identity_provider = CryptoProvider {
+        hash: Default::default(),
+        cert: cert_verifier,
+        signer: Default::default(),
+        signature: Default::default(),
+    };
+    let handshake = secrets.server_cert_opening.data();
+    #[allow(irrefutable_let_patterns)]
+    let CertBinding::V1_2(binding) = &handshake.binding else {
+        anyhow::bail!("only the TLS 1.2 certificate binding is supported");
+    };
+    let server_ephemeral_key = &binding.server_ephemeral_key;
+    let verification_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs();
+    let verified_name = secrets
+        .identity_proof()
+        .verify_with_provider(
+            &identity_provider,
+            verification_time,
+            server_ephemeral_key,
+            attestation.body.cert_commitment(),
+        )
+        .context("server identity proof failed the pinned trust policy")?;
+    ensure!(
+        verified_name.to_string() == expected_server_name,
+        "server identity name {verified_name} does not match the expected {expected_server_name}"
+    );
+
+    let cert_field_id = attestation.body.cert_commitment.id.0 as usize;
+    let cert_leaf_hash = body_fields
+        .iter()
+        .find(|(id, _)| id.0 as usize == cert_field_id)
+        .map(|(_, hash)| *hash)
+        .context("server certificate commitment is absent from the TLSN body hash fields")?;
+    let cert_merkle_proof = merkle_tree.proof(&[cert_field_id]);
+    cert_merkle_proof.verify(
+        hasher,
+        &attestation.header.root,
+        [(cert_field_id, cert_leaf_hash)],
+    )?;
+
     let fixture = json!({
-        "schema": "zk-escrow.tlsn-income-fixture/v1",
+        "schema": "zk-escrow.tlsn-income-fixture/v2",
         "income": {
             "direction": "Received",
             "range": { "start": start, "end": end },
@@ -230,6 +338,17 @@ fn build_fixture(
         },
         "merkle": {
             "proof": serde_json::to_value(&merkle_proof)?,
+        },
+        "identity": {
+            "server_name": expected_server_name,
+            "trust_anchor": "pinned-local-ca",
+            "cert_commitment_bcs": attestation.body.cert_commitment.data.serialize(),
+            "cert_commitment_value": attestation.body.cert_commitment.data.0.value.as_bytes(),
+            "cert_commitment_leaf": cert_leaf_hash.as_bytes(),
+            "field_id": cert_field_id,
+            "merkle": {
+                "proof": serde_json::to_value(&cert_merkle_proof)?,
+            },
         },
     });
     Ok(fixture)
