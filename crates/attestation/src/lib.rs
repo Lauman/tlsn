@@ -252,6 +252,8 @@ pub use secrets::Secrets;
 
 #[cfg(test)]
 mod noir_fixture_export;
+#[cfg(test)]
+mod presentation_negative;
 
 /// Current version of attestations.
 pub const VERSION: Version = Version(0);
